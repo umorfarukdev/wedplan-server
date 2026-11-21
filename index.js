@@ -179,6 +179,66 @@ app.get("/bookings/:id", verifyToken, async (req, res) => {
 });
 
 
+// Cancel pending bookby customer
+app.patch("/bookings/:id/cancel", verifyToken, async (req, res) => {
+  const id = req.params.id;
+
+  const query = {
+    _id: new ObjectId(id),
+    customerEmail: req.user.email,
+    status: "pending",
+  };
+
+  const updatedDoc = {
+    $set: {
+      status: "cancelled",
+      updatedAt: new Date(),
+    },
+  };
+
+  const result = await bookings.updateOne(query, updatedDoc);
+  res.send(result);
+});
+
+// Get bookings for own services vendor
+app.get("/vendor/bookings", verifyToken, async (req, res) => {
+  const query = {
+    vendorEmail: req.user.email,
+  };
+
+  const result = await bookings.find(query).toArray();
+  res.send(result);
+});
+
+
+// Accept or reject booby vendor
+app.patch("/vendor/bookings/:id/status", verifyToken, async (req, res) => {
+  const id = req.params.id;
+  const { status } = req.body;
+
+  if (!["accepted", "rejected"].includes(status)) {
+    return res.status(400).send({
+      message: "Invalid booking status",
+    });
+  }
+
+  const query = {
+    _id: new ObjectId(id),
+    vendorEmail: req.user.email,
+    status: "pending",
+  };
+
+  const updatedDoc = {
+    $set: {
+      status: status,
+      updatedAt: new Date(),
+    },
+  };
+
+  const result = await bookings.updateOne(query, updatedDoc);
+  res.send(result);
+});
+
 
 // app.get("/vendor/services", async (req, res) => {
 //   const result = await services.find().toArray();
