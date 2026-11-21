@@ -239,6 +239,146 @@ app.patch("/vendor/bookings/:id/status", verifyToken, async (req, res) => {
   res.send(result);
 });
 
+// Get vendor dashboard overview
+app.get("/vendor/dashboard", verifyToken, async (req, res) => {
+  const email = req.user.email;
+
+  const totalServices = await services.countDocuments({
+    vendorEmail: email,
+  });
+
+  const totalBookings = await bookings.countDocuments({
+    vendorEmail: email,
+  });
+
+  const pendingBookings = await bookings.countDocuments({
+    vendorEmail: email,
+    status: "pending",
+  });
+
+  const acceptedBookings = await bookings.countDocuments({
+    vendorEmail: email,
+    status: "accepted",
+  });
+
+  const rejectedBookings = await bookings.countDocuments({
+    vendorEmail: email,
+    status: "rejected",
+  });
+
+  const cancelledBookings = await bookings.countDocuments({
+    vendorEmail: email,
+    status: "cancelled",
+  });
+
+  const result = {
+    totalServices,
+    totalBookings,
+    pendingBookings,
+    acceptedBookings,
+    rejectedBookings,
+    cancelledBookings,
+  };
+
+  res.send(result);
+});
+
+
+// Get customer dashboard overview
+app.get("/customer/dashboard", verifyToken, async (req, res) => {
+  const email = req.user.email;
+
+  const totalBookings = await bookings.countDocuments({
+    customerEmail: email,
+  });
+
+  const pendingBookings = await bookings.countDocuments({
+    customerEmail: email,
+    status: "pending",
+  });
+
+  const acceptedBookings = await bookings.countDocuments({
+    customerEmail: email,
+    status: "accepted",
+  });
+
+  const rejectedBookings = await bookings.countDocuments({
+    customerEmail: email,
+    status: "rejected",
+  });
+
+  const cancelledBookings = await bookings.countDocuments({
+    customerEmail: email,
+    status: "cancelled",
+  });
+
+  const result = {
+    totalBookings,
+    pendingBookings,
+    acceptedBookings,
+    rejectedBookings,
+    cancelledBookings,
+  };
+
+  res.send(result);
+});
+
+// Get customer booking statistics
+app.get("/customer/statistics", verifyToken, async (req, res) => {
+  const email = req.user.email;
+
+  const result = await bookings.aggregate([
+    {
+      $match: {
+        customerEmail: email,
+      },
+    },
+    {
+      $group: {
+        _id: null,
+
+        totalBookings: {
+          $sum: 1,
+        },
+
+        pendingBookings: {
+          $sum: {
+            $cond: [{ $eq: ["$status", "pending"] }, 1, 0],
+          },
+        },
+
+        acceptedBookings: {
+          $sum: {
+            $cond: [{ $eq: ["$status", "accepted"] }, 1, 0],
+          },
+        },
+
+        rejectedBookings: {
+          $sum: {
+            $cond: [{ $eq: ["$status", "rejected"] }, 1, 0],
+          },
+        },
+
+        cancelledBookings: {
+          $sum: {
+            $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0],
+          },
+        },
+      },
+    },
+  ]).toArray();
+
+  res.send(
+    result[0] || {
+      totalBookings: 0,
+      pendingBookings: 0,
+      acceptedBookings: 0,
+      rejectedBookings: 0,
+      cancelledBookings: 0,
+    }
+  );
+});
+
 
 // app.get("/vendor/services", async (req, res) => {
 //   const result = await services.find().toArray();
