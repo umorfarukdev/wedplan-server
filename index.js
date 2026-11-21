@@ -78,6 +78,56 @@ app.post("/services", verifyToken, async (req, res) => {
   res.send(result);
 });
 
+// Update own service vendor
+app.patch("/services/:id", verifyToken, async (req, res) => {
+  const id = req.params.id;
+
+  const filter = {
+    _id: new ObjectId(id),
+    vendorEmail: req.user.email,
+  };
+
+  const updatedData = {
+    $set: {
+      ...req.body,
+      updatedAt: new Date(),
+    },
+  };
+
+  const result = await services.updateOne(filter, updatedData);
+  res.send(result);
+});
+
+// Update service availability vendor
+app.patch("/services/:id/availability", verifyToken, async (req, res) => {
+  const id = req.params.id;
+  const { isActive } = req.body;
+  const filter = {
+    _id: new ObjectId(id),
+    vendorEmail: req.user.email,
+  };
+  const updatedDoc = {
+    $set: {
+      isActive: isActive,
+      updatedAt: new Date(),
+    },
+  };
+  const result = await services.updateOne(filter, updatedDoc);
+  res.send(result);
+});
+
+// Delete own service vendor
+app.delete("/services/:id", verifyToken, async (req, res) => {
+  const id = req.params.id;
+
+  const query = {
+    _id: new ObjectId(id),
+    vendorEmail: req.user.email,
+  };
+
+  const result = await services.deleteOne(query);
+  res.send(result);
+});
 
 
 
