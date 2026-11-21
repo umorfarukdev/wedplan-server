@@ -393,6 +393,112 @@ app.get("/customer/bookings", verifyToken, async (req, res) => {
 });
 
 
+// Get admin dashboard overview
+app.get("/admin/dashboard", verifyToken, verifyAdmin, async (req, res) => {
+  const totalUsers = await users.countDocuments();
+
+  const totalVendors = await users.countDocuments({
+    role: "vendor",
+  });
+
+  const totalCustomers = await users.countDocuments({
+    role: "customer",
+  });
+
+  const totalServices = await services.countDocuments();
+
+  const pendingServices = await services.countDocuments({
+    status: "pending",
+  });
+
+  const totalBookings = await bookings.countDocuments();
+
+  const totalTransactions = await payments.countDocuments();
+
+  const result = {
+    totalUsers,
+    totalVendors,
+    totalCustomers,
+    totalServices,
+    pendingServices,
+    totalBookings,
+    totalTransactions,
+  };
+
+  res.send(result);
+});
+
+// Get all users
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+  const result = await users.find().toArray();
+
+  res.send(result);
+});
+
+
+// Get user details
+app.get("/admin/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+
+  const query = {
+    _id: new ObjectId(id),
+  };
+
+  const result = await users.findOne(query);
+
+  if (!result) {
+    return res.status(404).send({
+      message: "User not found",
+    });
+  }
+
+  res.send(result);
+});
+
+// Block user
+app.patch("/admin/users/:id/block", verifyToken, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+
+  const query = {
+    _id: new ObjectId(id),
+    role: { $ne: "admin" },
+  };
+
+  const updatedDoc = {
+    $set: {
+      isBlocked: true,
+      updatedAt: new Date(),
+    },
+  };
+
+  const result = await users.updateOne(query, updatedDoc);
+
+  res.send(result);
+});
+
+// Unblock user
+app.patch("/admin/users/:id/unblock", verifyToken, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+
+  const query = {
+    _id: new ObjectId(id),
+    role: { $ne: "admin" },
+  };
+
+  const updatedDoc = {
+    $set: {
+      isBlocked: false,
+      updatedAt: new Date(),
+    },
+  };
+
+  const result = await users.updateOne(query, updatedDoc);
+
+  res.send(result);
+});
+
+
+
 // app.get("/vendor/services", async (req, res) => {
 //   const result = await services.find().toArray();
 //   res.send(result);
