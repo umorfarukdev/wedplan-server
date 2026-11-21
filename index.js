@@ -61,6 +61,26 @@ app.get("/services/categories", async (req, res) => {
   res.send(result);
 });
 
+// Create a new service
+app.post("/services", verifyToken, async (req, res) => {
+  const serviceData = req.body;
+
+  const newService = {
+    ...serviceData,
+    vendorEmail: req.user.email,
+    status: "pending",
+    isActive: true,
+    isFeatured: false,
+    createdAt: new Date(),
+  };
+
+  const result = await services.insertOne(newService);
+  res.send(result);
+});
+
+
+
+
 // app.get("/vendor/services", async (req, res) => {
 //   const result = await services.find().toArray();
 //   res.send(result);
