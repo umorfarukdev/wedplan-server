@@ -379,6 +379,19 @@ app.get("/customer/statistics", verifyToken, async (req, res) => {
   );
 });
 
+// Get customer bookings
+app.get("/customer/bookings", verifyToken, async (req, res) => {
+  const query = {
+    customerEmail: req.user.email,
+  };
+
+  const result = await bookings.find(query).sort({
+    createdAt: -1,
+  }).toArray();
+
+  res.send(result);
+});
+
 
 // app.get("/vendor/services", async (req, res) => {
 //   const result = await services.find().toArray();
