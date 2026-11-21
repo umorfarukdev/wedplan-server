@@ -129,6 +129,55 @@ app.delete("/services/:id", verifyToken, async (req, res) => {
   res.send(result);
 });
 
+// Create booking request
+app.post("/bookings", verifyToken, async (req, res) => {
+  const bookingData = req.body;
+
+  const newBooking = {
+    ...bookingData,
+    customerEmail: req.user.email,
+    status: "pending",
+    createdAt: new Date(),
+  };
+
+  const result = await bookings.insertOne(newBooking);
+  res.send(result);
+});
+
+// Get own bookings
+app.get("/bookings/my-bookings", verifyToken, async (req, res) => {
+  const query = {
+    customerEmail: req.user.email,
+  };
+
+  const result = await bookings.find(query).toArray();
+  res.send(result);
+});
+
+// Get booking details
+app.get("/bookings/:id", verifyToken, async (req, res) => {
+  const id = req.params.id;
+
+  const query = {
+    _id: new ObjectId(id),
+  };
+
+  const result = await bookings.findOne(query);
+
+  if (!result) {
+    return res.status(404).send({ message: "Booking not found" });
+  }
+
+  if (
+    result.customerEmail !== req.user.email &&
+    result.vendorEmail !== req.user.email
+  ) {
+    return res.status(403).send({ message: "Access denied" });
+  }
+
+  res.send(result);
+});
+
 
 
 // app.get("/vendor/services", async (req, res) => {
