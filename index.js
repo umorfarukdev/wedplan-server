@@ -1,9 +1,11 @@
 import express from "express";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
+import cors from "cors";
 
 const port = process.env.PORT;
 const app = express();
+app.use(cors());
 const client = new MongoClient(process.env.MONGO_DB_URI);
 export async function connectToMongoDB() {
   try {
@@ -18,12 +20,15 @@ export async function connectToMongoDB() {
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("weding-plan");
 const services = db.collection("services");
+const bookings = db.collection("bookings");
+const users = db.collection("user");
 
 app.use(express.json());
 
 app.get("/", (req, res) => {
   res.send({ message: "Weading plan server runnig" });
 });
+
 
 
 // Get all submitted services
@@ -33,12 +38,14 @@ app.get("/services", async (req, res) => {
 });
 
 // Get service details
-app.get("/services/:id", async (req, res) => {
+app.get("/service/:id", async (req, res) => {
   const id = req.params.id;
   const query = { _id: new ObjectId(id) };
   const result = await services.findOne(query);
   res.send(result);
 });
+
+
 // Get featured services
 app.get("/services/featured", async (req, res) => {
   const query = {
@@ -62,24 +69,34 @@ app.get("/services/categories", async (req, res) => {
 });
 
 // Create a new service
-app.post("/services", verifyToken, async (req, res) => {
-  const serviceData = req.body;
+app.post("/services", async (req, res) => {
+  const {
+      serviceName,
+      category,
+      description,
+      price,
+      location,
+      images,
+    } = req.body;
 
   const newService = {
-    ...serviceData,
-    vendorEmail: req.user.email,
-    status: "pending",
-    isActive: true,
-    isFeatured: false,
-    createdAt: new Date(),
-  };
+      serviceName,
+      category,
+      description,
+      price: Number(price),
+      location,
+      images,
+      vendorId: req.user.id,
+      status: "pending",
+      createdAt: new Date(),
+    };
 
   const result = await services.insertOne(newService);
   res.send(result);
 });
 
 // Update own service vendor
-app.patch("/services/:id", verifyToken, async (req, res) => {
+app.patch("/services/:id", async (req, res) => {
   const id = req.params.id;
 
   const filter = {
@@ -99,7 +116,7 @@ app.patch("/services/:id", verifyToken, async (req, res) => {
 });
 
 // Update service availability vendor
-app.patch("/services/:id/availability", verifyToken, async (req, res) => {
+app.patch("/services/:id/availability", async (req, res) => {
   const id = req.params.id;
   const { isActive } = req.body;
   const filter = {
@@ -117,7 +134,7 @@ app.patch("/services/:id/availability", verifyToken, async (req, res) => {
 });
 
 // Delete own service vendor
-app.delete("/services/:id", verifyToken, async (req, res) => {
+app.delete("/services/:id", async (req, res) => {
   const id = req.params.id;
 
   const query = {
@@ -130,24 +147,35 @@ app.delete("/services/:id", verifyToken, async (req, res) => {
 });
 
 // Create booking request
-app.post("/bookings", verifyToken, async (req, res) => {
-  const bookingData = req.body;
+app.post("/bookings", async (req, res) => {
+  const {
+      serviceId,
+      vendorId,
+      customerId,
+      eventDate,
+      eventLocation,
+      message,
+    } = req.body;
 
-  const newBooking = {
-    ...bookingData,
-    customerEmail: req.user.email,
-    status: "pending",
-    createdAt: new Date(),
-  };
+      const booking = {
+      serviceId,
+      vendorId,
+      customerId,
+      eventDate,
+      eventLocation,
+      message: message || "",
+      status: "pending",
+      createdAt: new Date(),
+    };
 
-  const result = await bookings.insertOne(newBooking);
+  const result = await bookings.insertOne(booking);
   res.send(result);
 });
 
 // Get own bookings
-app.get("/bookings/my-bookings", verifyToken, async (req, res) => {
+app.get("/my-bookings/:email", async (req, res) => {
   const query = {
-    customerEmail: req.user.email,
+    customerEmail: req.params.email,
   };
 
   const result = await bookings.find(query).toArray();
@@ -155,7 +183,7 @@ app.get("/bookings/my-bookings", verifyToken, async (req, res) => {
 });
 
 // Get booking details
-app.get("/bookings/:id", verifyToken, async (req, res) => {
+app.get("/bookings/:id", async (req, res) => {
   const id = req.params.id;
 
   const query = {
@@ -180,7 +208,7 @@ app.get("/bookings/:id", verifyToken, async (req, res) => {
 
 
 // Cancel pending bookby customer
-app.patch("/bookings/:id/cancel", verifyToken, async (req, res) => {
+app.patch("/bookings/:id/cancel", async (req, res) => {
   const id = req.params.id;
 
   const query = {
@@ -201,7 +229,7 @@ app.patch("/bookings/:id/cancel", verifyToken, async (req, res) => {
 });
 
 // Get bookings for own services vendor
-app.get("/vendor/bookings", verifyToken, async (req, res) => {
+app.get("/vendor/bookings", async (req, res) => {
   const query = {
     vendorEmail: req.user.email,
   };
@@ -212,7 +240,7 @@ app.get("/vendor/bookings", verifyToken, async (req, res) => {
 
 
 // Accept or reject booby vendor
-app.patch("/vendor/bookings/:id/status", verifyToken, async (req, res) => {
+app.patch("/vendor/bookings/:id/status", async (req, res) => {
   const id = req.params.id;
   const { status } = req.body;
 
@@ -240,7 +268,7 @@ app.patch("/vendor/bookings/:id/status", verifyToken, async (req, res) => {
 });
 
 // Get vendor dashboard overview
-app.get("/vendor/dashboard", verifyToken, async (req, res) => {
+app.get("/vendor/dashboard", async (req, res) => {
   const email = req.user.email;
 
   const totalServices = await services.countDocuments({
@@ -285,7 +313,7 @@ app.get("/vendor/dashboard", verifyToken, async (req, res) => {
 
 
 // Get customer dashboard overview
-app.get("/customer/dashboard", verifyToken, async (req, res) => {
+app.get("/customer/dashboard", async (req, res) => {
   const email = req.user.email;
 
   const totalBookings = await bookings.countDocuments({
@@ -324,7 +352,7 @@ app.get("/customer/dashboard", verifyToken, async (req, res) => {
 });
 
 // Get customer booking statistics
-app.get("/customer/statistics", verifyToken, async (req, res) => {
+app.get("/customer/statistics", async (req, res) => {
   const email = req.user.email;
 
   const result = await bookings.aggregate([
@@ -380,7 +408,7 @@ app.get("/customer/statistics", verifyToken, async (req, res) => {
 });
 
 // Get customer bookings
-app.get("/customer/bookings", verifyToken, async (req, res) => {
+app.get("/customer/bookings", async (req, res) => {
   const query = {
     customerEmail: req.user.email,
   };
@@ -394,7 +422,7 @@ app.get("/customer/bookings", verifyToken, async (req, res) => {
 
 
 // Get admin dashboard overview
-app.get("/admin/dashboard", verifyToken, verifyAdmin, async (req, res) => {
+app.get("/admin/dashboard", async (req, res) => {
   const totalUsers = await users.countDocuments();
 
   const totalVendors = await users.countDocuments({
@@ -429,7 +457,7 @@ app.get("/admin/dashboard", verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Get all users
-app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+app.get("/admin/users", async (req, res) => {
   const result = await users.find().toArray();
 
   res.send(result);
@@ -437,7 +465,7 @@ app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
 
 
 // Get user details
-app.get("/admin/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+app.get("/admin/users/:id", async (req, res) => {
   const id = req.params.id;
 
   const query = {
@@ -456,7 +484,7 @@ app.get("/admin/users/:id", verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Block user
-app.patch("/admin/users/:id/block", verifyToken, verifyAdmin, async (req, res) => {
+app.patch("/admin/users/:id/block", async (req, res) => {
   const id = req.params.id;
 
   const query = {
@@ -477,7 +505,7 @@ app.patch("/admin/users/:id/block", verifyToken, verifyAdmin, async (req, res) =
 });
 
 // Unblock user
-app.patch("/admin/users/:id/unblock", verifyToken, verifyAdmin, async (req, res) => {
+app.patch("/admin/users/:id/unblock", async (req, res) => {
   const id = req.params.id;
 
   const query = {
