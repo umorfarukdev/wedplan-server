@@ -355,85 +355,112 @@ app.patch("/vendor/bookings/:id/status", async (req, res) => {
 
 // Get vendor dashboard overview
 app.get("/vendor/dashboard", async (req, res) => {
-  const email = req.user.email;
+  try {
+    const vendorId = req.query.vendorId;
 
-  const totalServices = await services.countDocuments({
-    vendorEmail: email,
-  });
+    if (!vendorId) {
+      return res.status(400).send({
+        success: false,
+        message: "Vendor ID is required",
+      });
+    }
 
-  const totalBookings = await bookings.countDocuments({
-    vendorEmail: email,
-  });
+    // Total services
+    const totalServices = await services.countDocuments({
+      vendorId: vendorId,
+    });
 
-  const pendingBookings = await bookings.countDocuments({
-    vendorEmail: email,
-    status: "pending",
-  });
+    // Total bookings
+    const totalBookings = await bookings.countDocuments({
+      vendorId: vendorId,
+    });
 
-  const acceptedBookings = await bookings.countDocuments({
-    vendorEmail: email,
-    status: "accepted",
-  });
+    const pendingBookings = await bookings.countDocuments({
+      vendorId: vendorId,
+      status: "pending",
+    });
 
-  const rejectedBookings = await bookings.countDocuments({
-    vendorEmail: email,
-    status: "rejected",
-  });
+    const acceptedBookings = await bookings.countDocuments({
+      vendorId: vendorId,
+      status: "accepted",
+    });
 
-  const cancelledBookings = await bookings.countDocuments({
-    vendorEmail: email,
-    status: "cancelled",
-  });
+    const rejectedBookings = await bookings.countDocuments({
+      vendorId: vendorId,
+      status: "rejected",
+    });
 
-  const result = {
-    totalServices,
-    totalBookings,
-    pendingBookings,
-    acceptedBookings,
-    rejectedBookings,
-    cancelledBookings,
-  };
+    const cancelledBookings = await bookings.countDocuments({
+      vendorId: vendorId,
+      status: "cancelled",
+    });
 
-  res.send(result);
+    res.send({
+      success: true,
+      totalServices,
+      totalBookings,
+      pendingBookings,
+      acceptedBookings,
+      rejectedBookings,
+      cancelledBookings,
+    });
+  } catch (error) {
+    console.error("Vendor dashboard error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to load vendor dashboard",
+    });
+  }
 });
 
 // Get customer dashboard overview
 app.get("/customer/dashboard", async (req, res) => {
-  const email = req.user.email;
+  try {
+    const email = req.query.email;
 
-  const totalBookings = await bookings.countDocuments({
-    customerEmail: email,
-  });
+    if (!email) {
+      return res.status(400).send({
+        success: false,
+        message: "Customer email is required",
+      });
+    }
 
-  const pendingBookings = await bookings.countDocuments({
-    customerEmail: email,
-    status: "pending",
-  });
+    const bookingsData = await bookings
+      .find({ customerEmail: email })
+      .sort({ createdAt: -1 })
+      .toArray();
 
-  const acceptedBookings = await bookings.countDocuments({
-    customerEmail: email,
-    status: "accepted",
-  });
+    const totalBookings = bookingsData.length;
 
-  const rejectedBookings = await bookings.countDocuments({
-    customerEmail: email,
-    status: "rejected",
-  });
+    const pendingBookings = bookingsData.filter(
+      (booking) => booking.status === "pending",
+    ).length;
 
-  const cancelledBookings = await bookings.countDocuments({
-    customerEmail: email,
-    status: "cancelled",
-  });
+    const acceptedBookings = bookingsData.filter(
+      (booking) => booking.status === "accepted",
+    ).length;
 
-  const result = {
-    totalBookings,
-    pendingBookings,
-    acceptedBookings,
-    rejectedBookings,
-    cancelledBookings,
-  };
+    const rejectedBookings = bookingsData.filter(
+      (booking) => booking.status === "rejected",
+    ).length;
 
-  res.send(result);
+    return res.status(200).send({
+      success: true,
+      totalBookings,
+      pendingBookings,
+      acceptedBookings,
+      rejectedBookings,
+      recentBookings: bookingsData.slice(0, 5),
+    });
+  } catch (error) {
+    console.error("Customer Dashboard Error:", error);
+
+    return res.status(500).send({
+      success: false,
+      message: "Failed to fetch customer dashboard",
+    });
+  }
 });
 
 // Get customer booking statistics
