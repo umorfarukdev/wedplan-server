@@ -235,7 +235,6 @@ app.delete("/services/:id", async (req, res) => {
 app.post("/bookings", async (req, res) => {
   const {
     serviceId,
-    vendorId,
     customerId,
     customerEmail,
     eventDate,
@@ -243,9 +242,21 @@ app.post("/bookings", async (req, res) => {
     message,
   } = req.body;
 
+      // 1. Find service from database
+    const service = await services.findOne({
+      _id: new ObjectId(serviceId),
+    });
+
+    // 2. Check service exists
+    if (!service) {
+      return res.status(404).send({
+        message: "Service not found",
+      });
+    }
+
   const booking = {
     serviceId,
-    vendorId,
+    vendorId: service.vendorId,
     customerId,
     customerEmail,
     eventDate,
@@ -293,7 +304,7 @@ app.get("/bookings/:id", async (req, res) => {
   res.send(result);
 });
 
-// Cancel pending bookby customer
+// Cancel pending bookings customer
 app.patch("/bookings/:id/cancel", async (req, res) => {
   const id = req.params.id;
 
@@ -325,7 +336,7 @@ app.get("/vendor/services/:vendorId", async (req, res) => {
   res.send(result);
 });
 
-// Accept or reject booby vendor
+// Accept or reject bookings vendor
 app.patch("/vendor/bookings/:id/status", async (req, res) => {
   const id = req.params.id;
   const { status } = req.body;
@@ -376,17 +387,14 @@ app.get("/vendor/dashboard", async (req, res) => {
     });
 
     const pendingBookings = await bookings.countDocuments({
-      vendorId: vendorId,
       status: "pending",
     });
 
     const acceptedBookings = await bookings.countDocuments({
-      vendorId: vendorId,
       status: "accepted",
     });
 
     const rejectedBookings = await bookings.countDocuments({
-      vendorId: vendorId,
       status: "rejected",
     });
 
