@@ -19,17 +19,23 @@ export async function connectToMongoDB() {
 
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("weding-plan");
+console.log("Database Name:", db.databaseName);
 const services = db.collection("services");
 const bookings = db.collection("bookings");
 const users = db.collection("user");
+const payments = db.collection("payments");
 
 app.use(express.json());
+
+app.get("/debug/collections", async (req, res) => {
+  const collections = await db.listCollections().toArray();
+
+  res.send(collections.map((collection) => collection.name));
+});
 
 app.get("/", (req, res) => {
   res.send({ message: "Weading plan server runnig" });
 });
-
-
 
 // Get all submitted services
 app.get("/services", async (req, res) => {
@@ -45,16 +51,13 @@ app.get("/service/:id", async (req, res) => {
   res.send(result);
 });
 
-
 // Get featured services
 app.get("/services/featured", async (req, res) => {
   const query = {
-    status: "approved",
-    isActive: true,
-    isFeatured: true,
+    featured: true,
   };
 
-  const result = await services.find(query).toArray();
+  const result = await services.find(query).limit(3).toArray();
   res.send(result);
 });
 
@@ -68,105 +71,189 @@ app.get("/services/categories", async (req, res) => {
   res.send(result);
 });
 
-// Create a new service
+// Create a new service vendor
 app.post("/services", async (req, res) => {
-  const {
+  try {
+    const {
       serviceName,
       category,
       description,
       price,
       location,
       images,
+      vendorId,
     } = req.body;
 
-  const newService = {
+    console.log("Received Service Data:", req.body);
+
+    if (!vendorId) {
+      return res.status(400).send({
+        success: false,
+        message: "Vendor ID is required",
+      });
+    }
+
+    const newService = {
       serviceName,
       category,
       description,
       price: Number(price),
       location,
       images,
-      vendorId: req.user.id,
+      vendorId,
       status: "pending",
       createdAt: new Date(),
     };
 
-  const result = await services.insertOne(newService);
-  res.send(result);
+    const result = await services.insertOne(newService);
+
+    res.status(201).send({
+      success: true,
+      message: "Service created successfully",
+      insertedId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Create Service Error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: error.message,
+    });
+  }
 });
 
 // Update own service vendor
 app.patch("/services/:id", async (req, res) => {
-  const id = req.params.id;
+  const { id } = req.params;
+  const { vendorId, ...updateData } = req.body;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({
+      success: false,
+      message: "Invalid service ID",
+    });
+  }
+
+  if (!vendorId) {
+    return res.status(400).send({
+      success: false,
+      message: "Vendor ID is required",
+    });
+  }
 
   const filter = {
     _id: new ObjectId(id),
-    vendorEmail: req.user.email,
+    vendorId,
   };
 
-  const updatedData = {
+  const updatedDoc = {
     $set: {
-      ...req.body,
+      ...updateData,
       updatedAt: new Date(),
     },
   };
 
-  const result = await services.updateOne(filter, updatedData);
+  const result = await services.updateOne(filter, updatedDoc);
   res.send(result);
 });
 
 // Update service availability vendor
 app.patch("/services/:id/availability", async (req, res) => {
-  const id = req.params.id;
-  const { isActive } = req.body;
+  const { id } = req.params;
+  const { vendorId, isActive } = req.body;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({
+      success: false,
+      message: "Invalid service ID",
+    });
+  }
+
+  if (!vendorId || typeof isActive !== "boolean") {
+    return res.status(400).send({
+      success: false,
+      message: "Vendor ID and availability are required",
+    });
+  }
+
   const filter = {
     _id: new ObjectId(id),
-    vendorEmail: req.user.email,
+    vendorId,
+    status: "approved",
   };
-  const updatedDoc = {
+
+  const result = await services.updateOne(filter, {
     $set: {
-      isActive: isActive,
+      isActive,
       updatedAt: new Date(),
     },
-  };
-  const result = await services.updateOne(filter, updatedDoc);
-  res.send(result);
+  });
+
+  if (result.matchedCount === 0) {
+    return res.status(404).send({
+      success: false,
+      message: "Approved service not found",
+    });
+  }
+
+  res.send({
+    success: true,
+    message: "Availability updated successfully",
+    result,
+  });
 });
 
 // Delete own service vendor
 app.delete("/services/:id", async (req, res) => {
-  const id = req.params.id;
+  const { id } = req.params;
+  const { vendorId } = req.body;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({
+      success: false,
+      message: "Invalid service ID",
+    });
+  }
+
+  if (!vendorId) {
+    return res.status(400).send({
+      success: false,
+      message: "Vendor ID is required",
+    });
+  }
 
   const query = {
     _id: new ObjectId(id),
-    vendorEmail: req.user.email,
+    vendorId,
   };
 
   const result = await services.deleteOne(query);
   res.send(result);
 });
 
-// Create booking request
+// Create booking request customer
 app.post("/bookings", async (req, res) => {
   const {
-      serviceId,
-      vendorId,
-      customerId,
-      eventDate,
-      eventLocation,
-      message,
-    } = req.body;
+    serviceId,
+    vendorId,
+    customerId,
+    customerEmail,
+    eventDate,
+    eventLocation,
+    message,
+  } = req.body;
 
-      const booking = {
-      serviceId,
-      vendorId,
-      customerId,
-      eventDate,
-      eventLocation,
-      message: message || "",
-      status: "pending",
-      createdAt: new Date(),
-    };
+  const booking = {
+    serviceId,
+    vendorId,
+    customerId,
+    customerEmail,
+    eventDate,
+    eventLocation,
+    message: message || "",
+    status: "pending",
+    createdAt: new Date(),
+  };
 
   const result = await bookings.insertOne(booking);
   res.send(result);
@@ -206,7 +293,6 @@ app.get("/bookings/:id", async (req, res) => {
   res.send(result);
 });
 
-
 // Cancel pending bookby customer
 app.patch("/bookings/:id/cancel", async (req, res) => {
   const id = req.params.id;
@@ -228,16 +314,16 @@ app.patch("/bookings/:id/cancel", async (req, res) => {
   res.send(result);
 });
 
-// Get bookings for own services vendor
-app.get("/vendor/bookings", async (req, res) => {
-  const query = {
-    vendorEmail: req.user.email,
-  };
+// Get own services vendor
+app.get("/vendor/services/:vendorId", async (req, res) => {
+  const { vendorId } = req.params;
 
-  const result = await bookings.find(query).toArray();
+  const result = await services
+    .find({ vendorId })
+    .sort({ createdAt: -1 })
+    .toArray();
   res.send(result);
 });
-
 
 // Accept or reject booby vendor
 app.patch("/vendor/bookings/:id/status", async (req, res) => {
@@ -311,7 +397,6 @@ app.get("/vendor/dashboard", async (req, res) => {
   res.send(result);
 });
 
-
 // Get customer dashboard overview
 app.get("/customer/dashboard", async (req, res) => {
   const email = req.user.email;
@@ -355,46 +440,48 @@ app.get("/customer/dashboard", async (req, res) => {
 app.get("/customer/statistics", async (req, res) => {
   const email = req.user.email;
 
-  const result = await bookings.aggregate([
-    {
-      $match: {
-        customerEmail: email,
-      },
-    },
-    {
-      $group: {
-        _id: null,
-
-        totalBookings: {
-          $sum: 1,
-        },
-
-        pendingBookings: {
-          $sum: {
-            $cond: [{ $eq: ["$status", "pending"] }, 1, 0],
-          },
-        },
-
-        acceptedBookings: {
-          $sum: {
-            $cond: [{ $eq: ["$status", "accepted"] }, 1, 0],
-          },
-        },
-
-        rejectedBookings: {
-          $sum: {
-            $cond: [{ $eq: ["$status", "rejected"] }, 1, 0],
-          },
-        },
-
-        cancelledBookings: {
-          $sum: {
-            $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0],
-          },
+  const result = await bookings
+    .aggregate([
+      {
+        $match: {
+          customerEmail: email,
         },
       },
-    },
-  ]).toArray();
+      {
+        $group: {
+          _id: null,
+
+          totalBookings: {
+            $sum: 1,
+          },
+
+          pendingBookings: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "pending"] }, 1, 0],
+            },
+          },
+
+          acceptedBookings: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "accepted"] }, 1, 0],
+            },
+          },
+
+          rejectedBookings: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "rejected"] }, 1, 0],
+            },
+          },
+
+          cancelledBookings: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0],
+            },
+          },
+        },
+      },
+    ])
+    .toArray();
 
   res.send(
     result[0] || {
@@ -403,7 +490,7 @@ app.get("/customer/statistics", async (req, res) => {
       acceptedBookings: 0,
       rejectedBookings: 0,
       cancelledBookings: 0,
-    }
+    },
   );
 });
 
@@ -413,13 +500,15 @@ app.get("/customer/bookings", async (req, res) => {
     customerEmail: req.user.email,
   };
 
-  const result = await bookings.find(query).sort({
-    createdAt: -1,
-  }).toArray();
+  const result = await bookings
+    .find(query)
+    .sort({
+      createdAt: -1,
+    })
+    .toArray();
 
   res.send(result);
 });
-
 
 // Get admin dashboard overview
 app.get("/admin/dashboard", async (req, res) => {
@@ -462,7 +551,6 @@ app.get("/admin/users", async (req, res) => {
 
   res.send(result);
 });
-
 
 // Get user details
 app.get("/admin/users/:id", async (req, res) => {
@@ -524,8 +612,6 @@ app.patch("/admin/users/:id/unblock", async (req, res) => {
 
   res.send(result);
 });
-
-
 
 // app.get("/vendor/services", async (req, res) => {
 //   const result = await services.find().toArray();
