@@ -242,17 +242,17 @@ app.post("/bookings", async (req, res) => {
     message,
   } = req.body;
 
-      // 1. Find service from database
-    const service = await services.findOne({
-      _id: new ObjectId(serviceId),
-    });
+  // 1. Find service from database
+  const service = await services.findOne({
+    _id: new ObjectId(serviceId),
+  });
 
-    // 2. Check service exists
-    if (!service) {
-      return res.status(404).send({
-        message: "Service not found",
-      });
-    }
+  // 2. Check service exists
+  if (!service) {
+    return res.status(404).send({
+      message: "Service not found",
+    });
+  }
 
   const booking = {
     serviceId,
@@ -304,25 +304,30 @@ app.get("/bookings/:id", async (req, res) => {
   res.send(result);
 });
 
-// Cancel pending bookings customer
-app.patch("/bookings/:id/cancel", async (req, res) => {
+// Delete pending booking by customer
+app.delete("/bookings/:id", async (req, res) => {
   const id = req.params.id;
 
   const query = {
     _id: new ObjectId(id),
-    customerEmail: req.user.email,
-    status: "pending",
+    status: "pending", // Only pending bookings can be deleted
   };
 
-  const updatedDoc = {
-    $set: {
-      status: "cancelled",
-      updatedAt: new Date(),
-    },
-  };
+  const result = await bookings.deleteOne(query);
 
-  const result = await bookings.updateOne(query, updatedDoc);
-  res.send(result);
+  if (result.deletedCount === 0) {
+    return res.status(404).send({
+      success: false,
+      message:
+        "Booking not found or cannot be deleted. Only pending bookings can be deleted.",
+    });
+  }
+
+  res.send({
+    success: true,
+    message: "Booking deleted successfully.",
+    deletedCount: result.deletedCount,
+  });
 });
 
 // Get own services vendor
@@ -336,10 +341,31 @@ app.get("/vendor/services/:vendorId", async (req, res) => {
   res.send(result);
 });
 
+// Get vendor booking requests
+app.get("/vendor/bookings/:vendorId", async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    const query = {
+      vendorId: vendorId,
+    };
+
+    const result = await bookings.find(query).sort({ createdAt: -1 }).toArray();
+
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      message: "Failed to fetch vendor bookings",
+    });
+  }
+});
+
 // Accept or reject bookings vendor
 app.patch("/vendor/bookings/:id/status", async (req, res) => {
   const id = req.params.id;
-  const { status } = req.body;
+  const { status, vendorId } = req.body;
 
   if (!["accepted", "rejected"].includes(status)) {
     return res.status(400).send({
@@ -349,7 +375,7 @@ app.patch("/vendor/bookings/:id/status", async (req, res) => {
 
   const query = {
     _id: new ObjectId(id),
-    vendorEmail: req.user.email,
+    vendorId: vendorId,
     status: "pending",
   };
 
@@ -361,7 +387,17 @@ app.patch("/vendor/bookings/:id/status", async (req, res) => {
   };
 
   const result = await bookings.updateOne(query, updatedDoc);
-  res.send(result);
+
+  if (result.matchedCount === 0) {
+    return res.status(404).send({
+      message: "Booking not found or already processed",
+    });
+  }
+
+  res.send({
+    success: true,
+    message: `Booking ${status} successfully`,
+  });
 });
 
 // Get vendor dashboard overview
@@ -388,14 +424,17 @@ app.get("/vendor/dashboard", async (req, res) => {
 
     const pendingBookings = await bookings.countDocuments({
       status: "pending",
+      vendorId: vendorId,
     });
 
     const acceptedBookings = await bookings.countDocuments({
       status: "accepted",
+      vendorId: vendorId,
     });
 
     const rejectedBookings = await bookings.countDocuments({
       status: "rejected",
+      vendorId: vendorId,
     });
 
     const cancelledBookings = await bookings.countDocuments({
