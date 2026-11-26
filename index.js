@@ -23,7 +23,7 @@ console.log("Database Name:", db.databaseName);
 const services = db.collection("services");
 const bookings = db.collection("bookings");
 const users = db.collection("user");
-const payments = db.collection("payments");
+const transactions = db.collection("transactions");
 
 app.use(express.json());
 
@@ -93,6 +93,39 @@ app.post("/services", async (req, res) => {
       });
     }
 
+    // 1. Find vendor subscription
+    const vendor = await users.findOne(
+      { _id: new ObjectId(vendorId) },
+      {
+        projection: {
+          subscriptionPlan: 1,
+        },
+      },
+    );
+
+    if (!vendor) {
+      return res.status(404).send({
+        success: false,
+        message: "Vendor not found",
+      });
+    }
+
+    // 2. Count active services
+    const activeServiceCount = await services.countDocuments({
+      vendorId,
+      isActive: true,
+    });
+
+    // 3. Free plan limit
+    if (vendor.subscriptionPlan !== "premium" && activeServiceCount >= 3) {
+      return res.status(403).send({
+        success: false,
+        upgradeRequired: true,
+        message:
+          "Free plan allows maximum 3 active services. Upgrade to Premium.",
+      });
+    }
+
     const newService = {
       serviceName,
       category,
@@ -101,6 +134,8 @@ app.post("/services", async (req, res) => {
       location,
       images,
       vendorId,
+      featured: false,
+      isActive: true,
       status: "pending",
       createdAt: new Date(),
     };
@@ -461,6 +496,115 @@ app.get("/vendor/dashboard", async (req, res) => {
   }
 });
 
+app.post("/payments/checkout-verify", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).send({
+        success: false,
+        message: "Session ID required",
+      });
+    }
+
+    // Get stripe session
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    const {
+      status,
+      payment_status,
+      customer_email,
+      metadata,
+      payment_intent,
+      amount_total,
+      currency,
+      subscription,
+    } = session;
+
+    if (status !== "complete" || payment_status !== "paid") {
+      return res.send({
+        success: false,
+        message: "Payment verification failed",
+      });
+    }
+
+    const vendorId = metadata.vendorId;
+    const plan = metadata.plan || "premium";
+
+    if (!vendorId) {
+      return res.status(400).send({
+        success: false,
+        message: "Vendor ID missing from metadata",
+      });
+    }
+
+    // Prevent duplicate payment
+    const existingTransaction = await transactions.findOne({
+      stripeSessionId: sessionId,
+    });
+
+    if (existingTransaction) {
+      return res.send({
+        success: false,
+        message: "Payment already verified",
+      });
+    }
+
+    // Save transaction
+    const transaction = {
+      vendorId,
+
+      plan,
+
+      amount: amount_total / 100, // Stripe sends cents
+
+      currency,
+
+      stripeSessionId: sessionId,
+
+      stripeSubscriptionId: subscription || null,
+
+      status: "paid",
+
+      customerEmail: customer_email,
+
+      paymentIntent: payment_intent,
+
+      createdAt: new Date(),
+    };
+
+    const transactionResult = await transactions.insertOne(transaction);
+
+    // Update vendor subscription
+    const updateResult = await users.updateOne(
+      {
+        _id: new ObjectId(vendorId),
+      },
+      {
+        $set: {
+          subscriptionPlan: "premium",
+          subscriptionStatus: "active",
+          subscriptionUpdatedAt: new Date(),
+        },
+      },
+    );
+
+    res.send({
+      success: true,
+      message: "Payment verified successfully",
+      transactionResult,
+      updateResult,
+    });
+  } catch (error) {
+    console.error("Payment Verify Error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 // Get customer dashboard overview
 app.get("/customer/dashboard", async (req, res) => {
   try {
@@ -584,6 +728,113 @@ app.get("/customer/bookings", async (req, res) => {
   res.send(result);
 });
 
+// Get all services admin with search and filter
+app.get("/admin/services", async (req, res) => {
+  try {
+    const { search = "", status = "", category = "" } = req.query;
+
+    const query = {};
+
+    // Search by service name or vendor id
+    if (search) {
+      query.$or = [
+        {
+          serviceName: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+        {
+          vendorId: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+      ];
+    }
+
+    // Filter by status
+    if (status && status !== "all") {
+      query.status = status;
+    }
+
+    // Filter by category
+    if (category && category !== "all") {
+      query.category = category;
+    }
+
+    const result = await services.find(query).sort({ createdAt: -1 }).toArray();
+
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      message: "Failed to fetch services",
+    });
+  }
+});
+
+// all services admin with update status
+app.patch("/admin/services/:id/status", async (req, res) => {
+  const id = req.params.id;
+  const { status } = req.body;
+
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(400).send({
+      message: "Invalid status",
+    });
+  }
+
+  const result = await services.updateOne(
+    {
+      _id: new ObjectId(id),
+      status: "pending",
+    },
+    {
+      $set: {
+        status,
+        isActive: status === "approved",
+        updatedAt: new Date(),
+      },
+    },
+  );
+
+  res.send(result);
+});
+
+// all services admin with update active status toggle
+app.patch("/admin/services/:id/toggle", async (req, res) => {
+  const id = req.params.id;
+
+  const { isActive } = req.body;
+
+  const result = await services.updateOne(
+    {
+      _id: new ObjectId(id),
+    },
+    {
+      $set: {
+        isActive,
+        updatedAt: new Date(),
+      },
+    },
+  );
+
+  res.send(result);
+});
+
+// all services admin with delete service
+app.delete("/admin/services/:id", async (req, res) => {
+  const id = req.params.id;
+
+  const result = await services.deleteOne({
+    _id: new ObjectId(id),
+  });
+
+  res.send(result);
+});
+
 // Get admin dashboard overview
 app.get("/admin/dashboard", async (req, res) => {
   const totalUsers = await users.countDocuments();
@@ -604,7 +855,7 @@ app.get("/admin/dashboard", async (req, res) => {
 
   const totalBookings = await bookings.countDocuments();
 
-  const totalTransactions = await payments.countDocuments();
+  const totalTransactions = await transactions.countDocuments();
 
   const result = {
     totalUsers,
@@ -686,31 +937,6 @@ app.patch("/admin/users/:id/unblock", async (req, res) => {
 
   res.send(result);
 });
-
-// app.get("/vendor/services", async (req, res) => {
-//   const result = await services.find().toArray();
-//   res.send(result);
-// });
-
-// app.post("/services", async (req, res) => {
-//   const data = req.body;
-//   const result = await services.insertOne(data);
-//   res.send(result);
-// });
-
-// app.patch("/services/:id", async (req, res) => {
-//   const id = req.params.id;
-//   const query = { _id: new ObjectId(id) };
-//   const result = await services.updateOne(query);
-//   res.send(result);
-// });
-
-// app.delete("/services/:id", async (req, res) => {
-//   const id = req.params.id;
-//   const query = { _id: new ObjectId(id) };
-//   const result = await services.deleteOne(query);
-//   res.send(result);
-// });
 
 app.listen(port, () => {
   console.log(`Weading plan app listening on port ${port}`);
