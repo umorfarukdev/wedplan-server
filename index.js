@@ -31,61 +31,6 @@ const users = db.collection("user");
 const transactions = db.collection("transactions");
 const sessions = db.collection("session");
 
-const verifyToken = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    res.status(401).send({ message: "Unauthorized" });
-    return;
-  }
-  const token = authHeader.split(" ")[1];
-  if (!token) {
-    res.status(401).send({ message: "Unauthorized" });
-    return;
-  }
-
-  // Find session
-  const query = { token };
-  const sessions = await session.findOne(query);
-  if (!sessions) {
-    res.status(401).send({ message: "Unauthorized" });
-    return;
-  }
-
-  const userId = sessions.userId;
-  const userQuery = { _id: new ObjectId(userId) };
-  const user = await users.findOne(userQuery);
-  if (!user) {
-    res.status(401).send({ message: "Unauthorized" });
-    return;
-  }
-  req.user = user;
-  next();
-};
-
-const verifySeeker = async (req, res, next) => {
-  if (req.user.role !== "seeker") {
-    res.status(403).send({ message: "Forbidden" });
-    return;
-  }
-  next();
-};
-
-const verifyRecruiter = async (req, res, next) => {
-  if (req.user.role !== "recruiter") {
-    res.status(403).send({ message: "Forbidden" });
-    return;
-  }
-  next();
-};
-
-const verifyAdmin = async (req, res, next) => {
-  if (req.user.role !== "admin") {
-    res.status(403).send({ message: "Forbidden" });
-    return;
-  }
-  next();
-};
-
 // Convert a value to an ObjectId when it is a valid id string.
 function toObjectId(value) {
   const raw = String(value || "");
@@ -239,7 +184,7 @@ app.get("/services/categories", async (req, res) => {
 });
 
 // Create a new service vendor
-app.post("/services",  requireAuth, async (req, res) => {
+app.post("/services", requireAuth, async (req, res) => {
   try {
     const { serviceName, category, description, price, location, images } =
       req.body;
@@ -1189,3 +1134,5 @@ app.patch(
 app.listen(port, () => {
   console.log(`Weading plan app listening on port ${port}`);
 });
+
+export default app;
