@@ -9,6 +9,8 @@ const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors());
+app.use(express.json());
+
 const client = new MongoClient(process.env.MONGO_DB_URI);
 export async function connectToMongoDB() {
   try {
@@ -29,7 +31,60 @@ const users = db.collection("user");
 const transactions = db.collection("transactions");
 const sessions = db.collection("session");
 
-app.use(express.json());
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+  const token = authHeader.split(" ")[1];
+  if (!token) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  // Find session
+  const query = { token };
+  const sessions = await session.findOne(query);
+  if (!sessions) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const userId = sessions.userId;
+  const userQuery = { _id: new ObjectId(userId) };
+  const user = await users.findOne(userQuery);
+  if (!user) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+  req.user = user;
+  next();
+};
+
+const verifySeeker = async (req, res, next) => {
+  if (req.user.role !== "seeker") {
+    res.status(403).send({ message: "Forbidden" });
+    return;
+  }
+  next();
+};
+
+const verifyRecruiter = async (req, res, next) => {
+  if (req.user.role !== "recruiter") {
+    res.status(403).send({ message: "Forbidden" });
+    return;
+  }
+  next();
+};
+
+const verifyAdmin = async (req, res, next) => {
+  if (req.user.role !== "admin") {
+    res.status(403).send({ message: "Forbidden" });
+    return;
+  }
+  next();
+};
 
 // Convert a value to an ObjectId when it is a valid id string.
 function toObjectId(value) {
@@ -184,7 +239,7 @@ app.get("/services/categories", async (req, res) => {
 });
 
 // Create a new service vendor
-app.post("/services", requireAuth, async (req, res) => {
+app.post("/services",  requireAuth, async (req, res) => {
   try {
     const { serviceName, category, description, price, location, images } =
       req.body;
@@ -869,22 +924,6 @@ app.get("/customer/statistics", requireAuth, async (req, res) => {
   );
 });
 
-// Get customer bookings
-app.get("/customer/bookings", async (req, res) => {
-  const query = {
-    customerEmail: req.user.email,
-  };
-
-  const result = await bookings
-    .find(query)
-    .sort({
-      createdAt: -1,
-    })
-    .toArray();
-
-  res.send(result);
-});
-
 // Get all services admin with search and filter
 app.get("/admin/services", requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -957,9 +996,8 @@ app.patch(
           isActive: status === "approved",
           updatedAt: new Date(),
         },
-      }
+      },
     );
-
 
     if (!result.matchedCount) {
       return res.status(404).send({
@@ -967,13 +1005,12 @@ app.patch(
       });
     }
 
-
     res.send({
       success: true,
       message: `Service status changed to ${status}`,
       result,
     });
-  }
+  },
 );
 
 // all services admin with update active status toggle
