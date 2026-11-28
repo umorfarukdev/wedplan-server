@@ -3,6 +3,7 @@ import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
 import Stripe from "stripe";
+import jwt from "jsonwebtoken";
 
 const port = process.env.PORT;
 const app = express();
@@ -29,7 +30,7 @@ const services = db.collection("services");
 const bookings = db.collection("bookings");
 const users = db.collection("user");
 const transactions = db.collection("transactions");
-const sessions = db.collection("session");
+// const sessions = db.collection("session");
 
 // Convert a value to an ObjectId when it is a valid id string.
 function toObjectId(value) {
@@ -42,94 +43,148 @@ function toObjectId(value) {
   return new ObjectId(raw);
 }
 
-// Read the better-auth session token sent as "Authorization: Bearer <token>".
-function getBearerToken(req) {
-  const header = req.headers.authorization || "";
-
-  if (!header.startsWith("Bearer ")) {
-    return "";
-  }
-
-  return header.slice(7).trim();
-}
-
-// Resolve the current user from the shared better-auth session collection.
-async function resolveSessionUser(req) {
-  const token = getBearerToken(req);
-
-  if (!token) {
-    return null;
-  }
-
-  const session = await sessions.findOne({ token });
-
-  if (!session) {
-    return null;
-  }
-
-  const expiresAt = session.expiresAt ? new Date(session.expiresAt) : null;
-
-  if (
-    !expiresAt ||
-    Number.isNaN(expiresAt.getTime()) ||
-    expiresAt <= new Date()
-  ) {
-    return null;
-  }
-
-  const userId = toObjectId(session.userId);
-  const user = userId ? await users.findOne({ _id: userId }) : null;
-
-  if (!user) {
-    return null;
-  }
-
-  return {
-    id: String(user._id),
-    email: user.email,
-    name: user.name || "",
-    role: user.role || "customer",
-    banned: Boolean(user.banned || user.isBlocked),
-  };
-}
-
-// Authentication middleware for routes that need the current user.
+// Authentication middleware
 async function requireAuth(req, res, next) {
   try {
-    const user = await resolveSessionUser(req);
+    // 1. Check Authorization header
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).send({
+        success: false,
+        message: "Authorization token missing",
+      });
+    }
+
+    const token = authHeader.slice(7).trim();
+
+    if (!token) {
+      return res.status(401).send({
+        success: false,
+        message: "Authorization token missing",
+      });
+    }
+
+    // 2. Check JWT secret
+    const secret = process.env.JWT_SECRET;
+
+    if (!secret) {
+      console.error("JWT_SECRET is not configured");
+
+      return res.status(500).send({
+        success: false,
+        message: "Server authentication configuration error",
+      });
+    }
+
+    // 3. Verify JWT
+    let decoded;
+
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch (error) {
+      console.error("JWT VERIFY ERROR:", error.name, error.message);
+
+      return res.status(401).send({
+        success: false,
+        message:
+          error.name === "TokenExpiredError"
+            ? "Token expired"
+            : "Invalid authentication token",
+      });
+    }
+
+    // 4. Validate JWT subject
+    if (
+      !decoded ||
+      typeof decoded !== "object" ||
+      typeof decoded.sub !== "string"
+    ) {
+      return res.status(401).send({
+        success: false,
+        message: "Invalid token payload",
+      });
+    }
+
+    // 5. Convert subject to MongoDB ObjectId
+    const userId = toObjectId(decoded.sub);
+
+    if (!userId) {
+      return res.status(401).send({
+        success: false,
+        message: "Invalid user ID",
+      });
+    }
+
+    // 6. Find current user from MongoDB
+    const user = await users.findOne({
+      _id: userId,
+    });
 
     if (!user) {
       return res.status(401).send({
         success: false,
-        message: "Authentication required",
+        message: "User not found",
       });
     }
 
-    if (user.banned) {
+    // 7. Attach authenticated user
+    req.user = {
+      id: String(user._id),
+      email: user.email,
+      name: user.name || "",
+      role: user.role || "customer",
+      banned: Boolean(user.banned || user.isBlocked),
+    };
+
+    // 8. Check blocked user
+    if (req.user.banned) {
       return res.status(403).send({
         success: false,
         message: "Your account has been blocked",
       });
     }
 
-    req.user = user;
+    // 9. Continue
     next();
   } catch (error) {
-    console.error("Authentication error:", error);
+    console.error("AUTH MIDDLEWARE ERROR:", error);
 
-    res.status(500).send({
+    return res.status(500).send({
       success: false,
-      message: "Authentication failed",
+      message: "Authentication middleware error",
     });
   }
 }
 
 // Restrict a route to administrators.
-function requireAdmin(req, res, next) {
+async function requireAdmin(req, res, next) {
   if (req.user?.role !== "admin") {
     return res.status(403).send({
       success: false,
       message: "Admin access required",
+    });
+  }
+
+  next();
+}
+
+async function requireVendor(req, res, next) {
+  if (req.user?.role !== "vendor" && req.user?.role !== "admin") {
+    return res.status(403).send({
+      success: false,
+      message: "Vendor access required",
+    });
+  }
+
+  next();
+}
+
+async function requireCustomer(req, res, next) {
+  if (req.user?.role !== "customer" && req.user?.role !== "admin") {
+    return res.status(403).send({
+      success: false,
+      message: "Customer access required",
     });
   }
 
@@ -184,7 +239,7 @@ app.get("/services/categories", async (req, res) => {
 });
 
 // Create a new service vendor
-app.post("/services", requireAuth, async (req, res) => {
+app.post("/services", requireAuth, requireVendor, async (req, res) => {
   try {
     const { serviceName, category, description, price, location, images } =
       req.body;
@@ -277,7 +332,7 @@ app.post("/services", requireAuth, async (req, res) => {
 });
 
 // Update own service vendor
-app.patch("/services/:id", requireAuth, async (req, res) => {
+app.patch("/services/:id", requireAuth, requireVendor, async (req, res) => {
   const { id } = req.params;
   const { vendorId: bodyVendorId, ...updateData } = req.body;
 
@@ -308,56 +363,63 @@ app.patch("/services/:id", requireAuth, async (req, res) => {
 });
 
 // Update service availability vendor
-app.patch("/services/:id/availability", requireAuth, async (req, res) => {
-  const { id } = req.params;
-  const { isActive } = req.body;
+app.patch(
+  "/services/:id/availability",
+  requireAuth,
+  requireVendor,
+  async (req, res) => {
+    const { id } = req.params;
+    const { isActive } = req.body;
 
-  const vendorId =
-    req.user.role === "admin" ? req.body.vendorId || req.user.id : req.user.id;
+    const vendorId =
+      req.user.role === "admin"
+        ? req.body.vendorId || req.user.id
+        : req.user.id;
 
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).send({
-      success: false,
-      message: "Invalid service ID",
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({
+        success: false,
+        message: "Invalid service ID",
+      });
+    }
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).send({
+        success: false,
+        message: "Availability is required",
+      });
+    }
+
+    const filter = {
+      _id: new ObjectId(id),
+      vendorId,
+      status: "approved",
+    };
+
+    const result = await services.updateOne(filter, {
+      $set: {
+        isActive,
+        updatedAt: new Date(),
+      },
     });
-  }
 
-  if (typeof isActive !== "boolean") {
-    return res.status(400).send({
-      success: false,
-      message: "Availability is required",
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        success: false,
+        message: "Approved service not found",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: "Availability updated successfully",
+      result,
     });
-  }
-
-  const filter = {
-    _id: new ObjectId(id),
-    vendorId,
-    status: "approved",
-  };
-
-  const result = await services.updateOne(filter, {
-    $set: {
-      isActive,
-      updatedAt: new Date(),
-    },
-  });
-
-  if (result.matchedCount === 0) {
-    return res.status(404).send({
-      success: false,
-      message: "Approved service not found",
-    });
-  }
-
-  res.send({
-    success: true,
-    message: "Availability updated successfully",
-    result,
-  });
-});
+  },
+);
 
 // Delete own service vendor
-app.delete("/services/:id", requireAuth, async (req, res) => {
+app.delete("/services/:id", requireAuth, requireVendor, async (req, res) => {
   const { id } = req.params;
 
   const vendorId =
@@ -380,7 +442,7 @@ app.delete("/services/:id", requireAuth, async (req, res) => {
 });
 
 // Create booking request customer
-app.post("/bookings", requireAuth, async (req, res) => {
+app.post("/bookings", requireAuth, requireCustomer, async (req, res) => {
   const { serviceId, eventDate, eventLocation, message } = req.body;
 
   if (!ObjectId.isValid(String(serviceId || ""))) {
@@ -429,23 +491,28 @@ app.post("/bookings", requireAuth, async (req, res) => {
 });
 
 // Get own bookings
-app.get("/my-bookings/:email", requireAuth, async (req, res) => {
-  const email = req.params.email;
+app.get(
+  "/my-bookings/:email",
+  requireAuth,
+  requireCustomer,
+  async (req, res) => {
+    const email = req.params.email;
 
-  if (req.user.role !== "admin" && email !== req.user.email) {
-    return res.status(403).send({ message: "Access denied" });
-  }
+    if (req.user.role !== "admin" && email !== req.user.email) {
+      return res.status(403).send({ message: "Access denied" });
+    }
 
-  const query = {
-    customerEmail: email,
-  };
+    const query = {
+      customerEmail: email,
+    };
 
-  const result = await bookings.find(query).toArray();
-  res.send(result);
-});
+    const result = await bookings.find(query).toArray();
+    res.send(result);
+  },
+);
 
 // Get booking details
-app.get("/bookings/:id", requireAuth, async (req, res) => {
+app.get("/bookings/:id", requireAuth, requireCustomer, async (req, res) => {
   const id = req.params.id;
 
   if (!ObjectId.isValid(id)) {
@@ -476,7 +543,7 @@ app.get("/bookings/:id", requireAuth, async (req, res) => {
 });
 
 // Delete pending booking by customer
-app.delete("/bookings/:id", requireAuth, async (req, res) => {
+app.delete("/bookings/:id", requireAuth, requireCustomer, async (req, res) => {
   const id = req.params.id;
 
   if (!ObjectId.isValid(id)) {
@@ -513,92 +580,112 @@ app.delete("/bookings/:id", requireAuth, async (req, res) => {
 });
 
 // Get own services vendor
-app.get("/vendor/services/:vendorId", requireAuth, async (req, res) => {
-  const { vendorId } = req.params;
-
-  if (!isOwnerOrAdmin(req.user, vendorId)) {
-    return res.status(403).send({ message: "Access denied" });
-  }
-
-  const result = await services
-    .find({ vendorId })
-    .sort({ createdAt: -1 })
-    .toArray();
-  res.send(result);
-});
-
-// Get vendor booking requests
-app.get("/vendor/bookings/:vendorId", requireAuth, async (req, res) => {
-  try {
+app.get(
+  "/vendor/services/:vendorId",
+  requireAuth,
+  requireVendor,
+  async (req, res) => {
     const { vendorId } = req.params;
 
     if (!isOwnerOrAdmin(req.user, vendorId)) {
       return res.status(403).send({ message: "Access denied" });
     }
 
-    const query = {
-      vendorId: vendorId,
-    };
-
-    const result = await bookings.find(query).sort({ createdAt: -1 }).toArray();
-
+    const result = await services
+      .find({ vendorId })
+      .sort({ createdAt: -1 })
+      .toArray();
     res.send(result);
-  } catch (error) {
-    console.error(error);
+  },
+);
 
-    res.status(500).send({
-      message: "Failed to fetch vendor bookings",
-    });
-  }
-});
+// Get vendor booking requests
+app.get(
+  "/vendor/bookings/:vendorId",
+  requireAuth,
+  requireVendor,
+  async (req, res) => {
+    try {
+      const { vendorId } = req.params;
+
+      if (!isOwnerOrAdmin(req.user, vendorId)) {
+        return res.status(403).send({ message: "Access denied" });
+      }
+
+      const query = {
+        vendorId: vendorId,
+      };
+
+      const result = await bookings
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(result);
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).send({
+        message: "Failed to fetch vendor bookings",
+      });
+    }
+  },
+);
 
 // Accept or reject bookings vendor
-app.patch("/vendor/bookings/:id/status", requireAuth, async (req, res) => {
-  const id = req.params.id;
-  const { status } = req.body;
+app.patch(
+  "/vendor/bookings/:id/status",
+  requireAuth,
+  requireVendor,
+  async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body;
 
-  const vendorId =
-    req.user.role === "admin" ? req.body.vendorId || req.user.id : req.user.id;
+    const vendorId =
+      req.user.role === "admin"
+        ? req.body.vendorId || req.user.id
+        : req.user.id;
 
-  if (!["accepted", "rejected"].includes(status)) {
-    return res.status(400).send({
-      message: "Invalid booking status",
+    if (!["accepted", "rejected"].includes(status)) {
+      return res.status(400).send({
+        message: "Invalid booking status",
+      });
+    }
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid booking ID" });
+    }
+
+    const query = {
+      _id: new ObjectId(id),
+      vendorId: vendorId,
+      status: "pending",
+    };
+
+    const updatedDoc = {
+      $set: {
+        status: status,
+        updatedAt: new Date(),
+      },
+    };
+
+    const result = await bookings.updateOne(query, updatedDoc);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        message: "Booking not found or already processed",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: `Booking ${status} successfully`,
     });
-  }
-
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).send({ message: "Invalid booking ID" });
-  }
-
-  const query = {
-    _id: new ObjectId(id),
-    vendorId: vendorId,
-    status: "pending",
-  };
-
-  const updatedDoc = {
-    $set: {
-      status: status,
-      updatedAt: new Date(),
-    },
-  };
-
-  const result = await bookings.updateOne(query, updatedDoc);
-
-  if (result.matchedCount === 0) {
-    return res.status(404).send({
-      message: "Booking not found or already processed",
-    });
-  }
-
-  res.send({
-    success: true,
-    message: `Booking ${status} successfully`,
-  });
-});
+  },
+);
 
 // Get vendor dashboard overview
-app.get("/vendor/dashboard", requireAuth, async (req, res) => {
+app.get("/vendor/dashboard", requireAuth, requireVendor, async (req, res) => {
   try {
     const vendorId =
       req.user.role === "admin"
@@ -609,6 +696,18 @@ app.get("/vendor/dashboard", requireAuth, async (req, res) => {
       return res.status(400).send({
         success: false,
         message: "Vendor ID is required",
+      });
+    }
+
+    // Get latest vendor information from MongoDB
+    const vendor = await users.findOne({
+      _id: new ObjectId(vendorId),
+    });
+
+    if (!vendor) {
+      return res.status(404).send({
+        success: false,
+        message: "Vendor not found",
       });
     }
 
@@ -644,12 +743,18 @@ app.get("/vendor/dashboard", requireAuth, async (req, res) => {
 
     res.send({
       success: true,
+
+      // Dashboard statistics
       totalServices,
       totalBookings,
       pendingBookings,
       acceptedBookings,
       rejectedBookings,
       cancelledBookings,
+
+      // Latest subscription information
+      subscriptionPlan: vendor.subscriptionPlan || "free",
+      subscriptionStatus: vendor.subscriptionStatus || "inactive",
     });
   } catch (error) {
     console.error("Vendor dashboard error:", error);
@@ -661,213 +766,228 @@ app.get("/vendor/dashboard", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/payments/checkout-verify", async (req, res) => {
-  try {
-    const { sessionId } = req.body;
+app.post(
+  "/payments/checkout-verify",
+  requireAuth,
+  requireVendor,
+  async (req, res) => {
+    try {
+      const { sessionId } = req.body;
 
-    if (!sessionId) {
-      return res.status(400).send({
-        success: false,
-        message: "Session ID required",
+      if (!sessionId) {
+        return res.status(400).send({
+          success: false,
+          message: "Session ID required",
+        });
+      }
+
+      // Get stripe session
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+      const {
+        status,
+        payment_status,
+        metadata,
+        amount_total,
+        currency,
+        subscription,
+      } = session;
+
+      if (status !== "complete" || payment_status !== "paid") {
+        return res.send({
+          success: false,
+          message: "Payment verification failed",
+        });
+      }
+
+      const vendorId = metadata.vendorId;
+      const plan = metadata.plan || "premium";
+
+      if (!vendorId) {
+        return res.status(400).send({
+          success: false,
+          message: "Vendor ID missing from metadata",
+        });
+      }
+
+      // Prevent duplicate payment
+      const existingTransaction = await transactions.findOne({
+        stripeSessionId: sessionId,
       });
-    }
 
-    // Get stripe session
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+      if (existingTransaction) {
+        return res.send({
+          success: false,
+          message: "Payment already verified",
+        });
+      }
 
-    const {
-      status,
-      payment_status,
-      metadata,
-      amount_total,
-      currency,
-      subscription,
-    } = session;
+      // Save transaction
+      // Save transaction
+      const transaction = {
+        vendorId: vendorId,
+        plan: plan,
+        amount: amount_total / 100,
+        currency: currency,
+        stripeSessionId: sessionId,
+        stripeSubscriptionId: subscription || null,
+        // customerEmail: customerEmail,
+        status: "paid",
+        createdAt: new Date(),
+      };
 
-    if (status !== "complete" || payment_status !== "paid") {
-      return res.send({
-        success: false,
-        message: "Payment verification failed",
-      });
-    }
+      const transactionResult = await transactions.insertOne(transaction);
 
-    const vendorId = metadata.vendorId;
-    const plan = metadata.plan || "premium";
-
-    if (!vendorId) {
-      return res.status(400).send({
-        success: false,
-        message: "Vendor ID missing from metadata",
-      });
-    }
-
-    // Prevent duplicate payment
-    const existingTransaction = await transactions.findOne({
-      stripeSessionId: sessionId,
-    });
-
-    if (existingTransaction) {
-      return res.send({
-        success: false,
-        message: "Payment already verified",
-      });
-    }
-
-    // Save transaction
-    // Save transaction
-    const transaction = {
-      vendorId: vendorId,
-      plan: plan,
-      amount: amount_total / 100,
-      currency: currency,
-      stripeSessionId: sessionId,
-      stripeSubscriptionId: subscription || null,
-      // customerEmail: customerEmail,
-      status: "paid",
-      createdAt: new Date(),
-    };
-
-    const transactionResult = await transactions.insertOne(transaction);
-
-    // Update vendor subscription
-    const updateResult = await users.updateOne(
-      {
-        _id: new ObjectId(vendorId),
-      },
-      {
-        $set: {
-          subscriptionPlan: "premium",
-          subscriptionStatus: "active",
-          subscriptionUpdatedAt: new Date(),
+      // Update vendor subscription
+      const updateResult = await users.updateOne(
+        {
+          _id: new ObjectId(vendorId),
         },
-      },
-    );
+        {
+          $set: {
+            subscriptionPlan: "premium",
+            subscriptionStatus: "active",
+            subscriptionUpdatedAt: new Date(),
+          },
+        },
+      );
 
-    res.send({
-      success: true,
-      message: "Payment verified successfully",
-      transactionResult,
-      updateResult,
-    });
-  } catch (error) {
-    console.error("Payment Verify Error:", error);
+      res.send({
+        success: true,
+        message: "Payment verified successfully",
+        transactionResult,
+        updateResult,
+      });
+    } catch (error) {
+      console.error("Payment Verify Error:", error);
 
-    res.status(500).send({
-      success: false,
-      message: error.message,
-    });
-  }
-});
+      res.status(500).send({
+        success: false,
+        message: error.message,
+      });
+    }
+  },
+);
 
 // Get customer dashboard overview
-app.get("/customer/dashboard", requireAuth, async (req, res) => {
-  try {
-    const email =
-      req.user.role === "admin"
-        ? req.query.email || req.user.email
-        : req.user.email;
+app.get(
+  "/customer/dashboard",
+  requireAuth,
+  requireCustomer,
+  async (req, res) => {
+    try {
+      const email =
+        req.user.role === "admin"
+          ? req.query.email || req.user.email
+          : req.user.email;
 
-    if (!email) {
-      return res.status(400).send({
+      if (!email) {
+        return res.status(400).send({
+          success: false,
+          message: "Customer email is required",
+        });
+      }
+
+      const bookingsData = await bookings
+        .find({ customerEmail: email })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      const totalBookings = bookingsData.length;
+
+      const pendingBookings = bookingsData.filter(
+        (booking) => booking.status === "pending",
+      ).length;
+
+      const acceptedBookings = bookingsData.filter(
+        (booking) => booking.status === "accepted",
+      ).length;
+
+      const rejectedBookings = bookingsData.filter(
+        (booking) => booking.status === "rejected",
+      ).length;
+
+      return res.status(200).send({
+        success: true,
+        totalBookings,
+        pendingBookings,
+        acceptedBookings,
+        rejectedBookings,
+        recentBookings: bookingsData.slice(0, 5),
+      });
+    } catch (error) {
+      console.error("Customer Dashboard Error:", error);
+
+      return res.status(500).send({
         success: false,
-        message: "Customer email is required",
+        message: "Failed to fetch customer dashboard",
       });
     }
-
-    const bookingsData = await bookings
-      .find({ customerEmail: email })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    const totalBookings = bookingsData.length;
-
-    const pendingBookings = bookingsData.filter(
-      (booking) => booking.status === "pending",
-    ).length;
-
-    const acceptedBookings = bookingsData.filter(
-      (booking) => booking.status === "accepted",
-    ).length;
-
-    const rejectedBookings = bookingsData.filter(
-      (booking) => booking.status === "rejected",
-    ).length;
-
-    return res.status(200).send({
-      success: true,
-      totalBookings,
-      pendingBookings,
-      acceptedBookings,
-      rejectedBookings,
-      recentBookings: bookingsData.slice(0, 5),
-    });
-  } catch (error) {
-    console.error("Customer Dashboard Error:", error);
-
-    return res.status(500).send({
-      success: false,
-      message: "Failed to fetch customer dashboard",
-    });
-  }
-});
+  },
+);
 
 // Get customer booking statistics
-app.get("/customer/statistics", requireAuth, async (req, res) => {
-  const email = req.user.email;
+app.get(
+  "/customer/statistics",
+  requireAuth,
+  requireCustomer,
+  async (req, res) => {
+    const email = req.user.email;
 
-  const result = await bookings
-    .aggregate([
-      {
-        $match: {
-          customerEmail: email,
-        },
-      },
-      {
-        $group: {
-          _id: null,
-
-          totalBookings: {
-            $sum: 1,
-          },
-
-          pendingBookings: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "pending"] }, 1, 0],
-            },
-          },
-
-          acceptedBookings: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "accepted"] }, 1, 0],
-            },
-          },
-
-          rejectedBookings: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "rejected"] }, 1, 0],
-            },
-          },
-
-          cancelledBookings: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0],
-            },
+    const result = await bookings
+      .aggregate([
+        {
+          $match: {
+            customerEmail: email,
           },
         },
-      },
-    ])
-    .toArray();
+        {
+          $group: {
+            _id: null,
 
-  res.send(
-    result[0] || {
-      totalBookings: 0,
-      pendingBookings: 0,
-      acceptedBookings: 0,
-      rejectedBookings: 0,
-      cancelledBookings: 0,
-    },
-  );
-});
+            totalBookings: {
+              $sum: 1,
+            },
+
+            pendingBookings: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "pending"] }, 1, 0],
+              },
+            },
+
+            acceptedBookings: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "accepted"] }, 1, 0],
+              },
+            },
+
+            rejectedBookings: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "rejected"] }, 1, 0],
+              },
+            },
+
+            cancelledBookings: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0],
+              },
+            },
+          },
+        },
+      ])
+      .toArray();
+
+    res.send(
+      result[0] || {
+        totalBookings: 0,
+        pendingBookings: 0,
+        acceptedBookings: 0,
+        rejectedBookings: 0,
+        cancelledBookings: 0,
+      },
+    );
+  },
+);
 
 // Get all services admin with search and filter
 app.get("/admin/services", requireAuth, requireAdmin, async (req, res) => {

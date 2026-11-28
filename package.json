@@ -21,5 +21,8 @@
     "mongodb": "^7.9.0",
     "multer": "^2.5.0",
     "stripe": "^23.2.0"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10"
   }
 }
