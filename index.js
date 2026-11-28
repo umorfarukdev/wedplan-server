@@ -280,7 +280,6 @@ app.get("/customer/services", async (req, res) => {
 
     res.status(200).send(result);
   } catch (error) {
-    console.error("Customer services error:", error);
 
     res.status(500).send({
       message: "Failed to fetch customer services",
