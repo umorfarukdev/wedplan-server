@@ -16,21 +16,18 @@ const client = new MongoClient(process.env.MONGO_DB_URI);
 export async function connectToMongoDB() {
   try {
     await client.connect();
-    console.log("You successfully connected to MongoDB!");
     return client;
-  } catch (err) {
-    console.dir(err);
+  } catch {
+    throw new Error("Unable to connect to MongoDB");
   }
 }
 
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("weding-plan");
-console.log("Database Name:", db.databaseName);
 const services = db.collection("services");
 const bookings = db.collection("bookings");
 const users = db.collection("user");
 const transactions = db.collection("transactions");
-// const sessions = db.collection("session");
 
 // Convert a value to an ObjectId when it is a valid id string.
 function toObjectId(value) {
@@ -69,8 +66,6 @@ async function requireAuth(req, res, next) {
     const secret = process.env.JWT_SECRET;
 
     if (!secret) {
-      console.error("JWT_SECRET is not configured");
-
       return res.status(500).send({
         success: false,
         message: "Server authentication configuration error",
@@ -83,8 +78,6 @@ async function requireAuth(req, res, next) {
     try {
       decoded = jwt.verify(token, secret);
     } catch (error) {
-      console.error("JWT VERIFY ERROR:", error.name, error.message);
-
       return res.status(401).send({
         success: false,
         message:
@@ -147,9 +140,7 @@ async function requireAuth(req, res, next) {
 
     // 9. Continue
     next();
-  } catch (error) {
-    console.error("AUTH MIDDLEWARE ERROR:", error);
-
+  } catch {
     return res.status(500).send({
       success: false,
       message: "Authentication middleware error",
@@ -207,10 +198,94 @@ app.get("/services", async (req, res) => {
 });
 
 // Get all submitted services approved and active for customer
+// app.get("/customer/services", async (req, res) => {
+//   const query = { status: "approved", isActive: true };
+//   const result = await services.find(query).toArray();
+//   res.send(result);
+// });
+
+// Search and Filter Customer Services
 app.get("/customer/services", async (req, res) => {
-  const query = { status: "approved", isActive: true };
-  const result = await services.find(query).toArray();
-  res.send(result);
+  try {
+    const { search, category, location, minPrice, maxPrice } = req.query;
+
+    const query = {
+      status: "approved",
+      isActive: true,
+    };
+
+    // Search by service name
+    if (search?.trim()) {
+      query.serviceName = {
+        $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        $options: "i",
+      };
+    }
+
+    // Filter by category
+    if (category?.trim()) {
+      query.category = category.trim();
+    }
+
+    // Filter by location
+    if (location?.trim()) {
+      query.location = {
+        $regex: location.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        $options: "i",
+      };
+    }
+
+    // Filter by price
+    const priceFilter = {};
+
+    if (minPrice !== undefined && minPrice !== "") {
+      const min = Number(minPrice);
+
+      if (!Number.isFinite(min) || min < 0) {
+        return res.status(400).send({
+          message: "Invalid minimum price",
+        });
+      }
+
+      priceFilter.$gte = min;
+    }
+
+    if (maxPrice !== undefined && maxPrice !== "") {
+      const max = Number(maxPrice);
+
+      if (!Number.isFinite(max) || max < 0) {
+        return res.status(400).send({
+          message: "Invalid maximum price",
+        });
+      }
+
+      priceFilter.$lte = max;
+    }
+
+    if (
+      priceFilter.$gte !== undefined &&
+      priceFilter.$lte !== undefined &&
+      priceFilter.$gte > priceFilter.$lte
+    ) {
+      return res.status(400).send({
+        message: "Minimum price cannot exceed maximum price",
+      });
+    }
+
+    if (Object.keys(priceFilter).length > 0) {
+      query.price = priceFilter;
+    }
+
+    const result = await services.find(query).toArray();
+
+    res.status(200).send(result);
+  } catch (error) {
+    console.error("Customer services error:", error);
+
+    res.status(500).send({
+      message: "Failed to fetch customer services",
+    });
+  }
 });
 
 // Get service details
@@ -255,8 +330,6 @@ app.post("/services", requireAuth, requireVendor, async (req, res) => {
         message: "Only vendors can create services",
       });
     }
-
-    console.log("Received Service Data:", req.body);
 
     if (!vendorId) {
       return res.status(400).send({
@@ -314,6 +387,30 @@ app.post("/services", requireAuth, requireVendor, async (req, res) => {
       createdAt: new Date(),
     };
 
+    // Validate service name
+    if (!serviceName || !serviceName.trim()) {
+      return res.status(400).send({
+        success: false,
+        message: "Service name is required",
+      });
+    }
+
+    // Check duplicate service for the same vendor
+    const existingService = await services.findOne({
+      vendorId,
+      serviceName: {
+        $regex: `^${serviceName.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        $options: "i",
+      },
+    });
+
+    if (existingService) {
+      return res.status(409).send({
+        success: false,
+        message: "You have already added a service with this name.",
+      });
+    }
+
     const result = await services.insertOne(newService);
 
     res.status(201).send({
@@ -322,8 +419,6 @@ app.post("/services", requireAuth, requireVendor, async (req, res) => {
       insertedId: result.insertedId,
     });
   } catch (error) {
-    console.error("Create Service Error:", error);
-
     res.status(500).send({
       success: false,
       message: error.message,
@@ -622,9 +717,7 @@ app.get(
         .toArray();
 
       res.send(result);
-    } catch (error) {
-      console.error(error);
-
+    } catch {
       res.status(500).send({
         message: "Failed to fetch vendor bookings",
       });
@@ -756,9 +849,7 @@ app.get("/vendor/dashboard", requireAuth, requireVendor, async (req, res) => {
       subscriptionPlan: vendor.subscriptionPlan || "free",
       subscriptionStatus: vendor.subscriptionStatus || "inactive",
     });
-  } catch (error) {
-    console.error("Vendor dashboard error:", error);
-
+  } catch {
     res.status(500).send({
       success: false,
       message: "Failed to load vendor dashboard",
@@ -859,8 +950,6 @@ app.post(
         updateResult,
       });
     } catch (error) {
-      console.error("Payment Verify Error:", error);
-
       res.status(500).send({
         success: false,
         message: error.message,
@@ -915,9 +1004,7 @@ app.get(
         rejectedBookings,
         recentBookings: bookingsData.slice(0, 5),
       });
-    } catch (error) {
-      console.error("Customer Dashboard Error:", error);
-
+    } catch {
       return res.status(500).send({
         success: false,
         message: "Failed to fetch customer dashboard",
@@ -1027,9 +1114,7 @@ app.get("/admin/services", requireAuth, requireAdmin, async (req, res) => {
     const result = await services.find(query).sort({ createdAt: -1 }).toArray();
 
     res.send(result);
-  } catch (error) {
-    console.error(error);
-
+  } catch {
     res.status(500).send({
       message: "Failed to fetch services",
     });
@@ -1127,8 +1212,6 @@ app.get("/admin/transactions", requireAuth, requireAdmin, async (req, res) => {
 
     res.send(result);
   } catch (error) {
-    console.error("Admin transactions error:", error);
-
     res.status(500).send({
       success: false,
       message: "Failed to fetch transactions",
@@ -1251,8 +1334,6 @@ app.patch(
   },
 );
 
-app.listen(port, () => {
-  console.log(`Weading plan app listening on port ${port}`);
-});
+app.listen(port);
 
 export default app;
