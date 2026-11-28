@@ -172,7 +172,7 @@ app.get("/services/featured", async (req, res) => {
     featured: true,
   };
 
-  const result = await services.find(query).limit(3).toArray();
+  const result = await services.find(query).limit(6).toArray();
   res.send(result);
 });
 
@@ -180,7 +180,7 @@ app.get("/services/featured", async (req, res) => {
 app.get("/services/categories", async (req, res) => {
   const result = await services.distinct("category");
 
-  res.send(result);
+  res.send(result.slice(0, 6));
 });
 
 // Create a new service vendor
